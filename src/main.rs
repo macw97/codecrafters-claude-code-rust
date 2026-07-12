@@ -3,6 +3,7 @@ use clap::Parser;
 use serde_json::{Value, json, from_value};
 use serde::{Deserialize, Serialize};
 use std::{env, process};
+use std::process::Command;
 
 
 #[derive(Debug, Deserialize)]
@@ -144,6 +145,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         }
                     }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "Bash",
+                        "description": "Execute a shell command",
+                        "parameters": {
+                        "type": "object",
+                        "required": ["command"],
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "The command to execute"
+                            }
+                        }
+                        }
+                    }
                 }
             ],
             "model": ai_model,
@@ -189,6 +207,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let text = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
                         let _ = std::fs::write(path, text);
                         messages.push(Message { role: "tool".to_string(), tool_call_id: Some(id), content: Some(text.to_string()), reasoning: None, tool_calls: Vec::new()})
+                    }
+                }
+                "Bash" => {
+                    let command = args.get("command").and_then(|v| v.as_str());
+                    if let Some(cmd) = command {
+                        let out = Command::new("sh")
+                            .arg("-c")
+                            .arg(&cmd)
+                            .output()
+                            .expect("Command failed to execute");
+
+                        let mut result = String::from_utf8_lossy(&out.stdout).into_owned();
+                        if !out.stderr.is_empty() {
+                            result.push_str(&String::from_utf8_lossy(&out.stderr));
+                        }
+                        messages.push(Message { role: "tool".to_string(), tool_call_id: Some(id), content: Some(result), reasoning: None, tool_calls: Vec::new()})
                     }
                 }
                 _ => { println!("Not implemented operation yet!"); }
