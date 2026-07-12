@@ -123,6 +123,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                        "required": ["file_path"]
                         }
                     }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "Write",
+                        "description": "Write content to a file",
+                        "parameters": {
+                        "type": "object",
+                        "required": ["file_path", "content"],
+                        "properties": {
+                            "file_path": {
+                            "type": "string",
+                            "description": "The path of the file to write to"
+                            },
+                            "content": {
+                            "type": "string",
+                            "description": "The content to write to the file"
+                            }
+                        }
+                        }
+                    }
                 }
             ],
             "model": ai_model,
@@ -161,6 +182,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(path) = file_path {
                         let f = std::fs::read_to_string(path)?;
                         messages.push(Message { role: "tool".to_string(), tool_call_id: Some(id), content: Some(f), reasoning: None, tool_calls: Vec::new()})
+                    }
+                }
+                "Write" => {
+                    if let Some(path) = file_path {
+                        let text = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                        let _ = std::fs::write(path, text);
+                        messages.push(Message { role: "tool".to_string(), tool_call_id: Some(id), content: Some(text.to_string()), reasoning: None, tool_calls: Vec::new()})
                     }
                 }
                 _ => { println!("Not implemented operation yet!"); }
