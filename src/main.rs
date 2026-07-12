@@ -34,7 +34,7 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(default)]
-    pub content: String,
+    pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] // only present on some providers (Nvidia/OpenRouter)
     pub reasoning: Option<String>,
     #[serde(default)] // absent when the model returns plain text
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ai_model = env::var("LOCAL_MODEL").unwrap_or("anthropic/claude-haiku-4.5".to_string());
 
     let mut messages: Vec<Message> = vec![
-        Message { role: "user".to_string(), tool_call_id: None, content: args.prompt, reasoning: None, tool_calls: Vec::new()}
+        Message { role: "user".to_string(), tool_call_id: None, content: Some(args.prompt), reasoning: None, tool_calls: Vec::new()}
     ];
 
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -130,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
         let body: ChatCompletion = serde_json::from_value(response)?;
-
+        
         let choice = match body.choices.into_iter().next() {
             Some(c) => c,
             None => break 'outer,
@@ -140,7 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if message.tool_calls.is_empty() {
             let m = message;
-            println!("{}", m.content);
+            println!("{}", m.content.as_deref().unwrap_or("Error my dude"));
             break 'outer;
         }
 
@@ -160,7 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     
                     if let Some(path) = file_path {
                         let f = std::fs::read_to_string(path)?;
-                        messages.push(Message { role: "tool".to_string(), tool_call_id: Some(id), content: f, reasoning: None, tool_calls: Vec::new()})
+                        messages.push(Message { role: "tool".to_string(), tool_call_id: Some(id), content: Some(f), reasoning: None, tool_calls: Vec::new()})
                     }
                 }
                 _ => { println!("Not implemented operation yet!"); }
