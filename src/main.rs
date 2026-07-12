@@ -1,7 +1,7 @@
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
 use serde_json::{Value, json, from_value};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{env, process};
 
 
@@ -27,19 +27,21 @@ pub struct Choice {
     pub finish_reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Message {
     #[serde(default)]
-    pub role: Option<String>,
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
     #[serde(default)]
-    pub content: Option<String>,
-    #[serde(default)] // only present on some providers (Nvidia/OpenRouter)
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")] // only present on some providers (Nvidia/OpenRouter)
     pub reasoning: Option<String>,
     #[serde(default)] // absent when the model returns plain text
     pub tool_calls: Vec<ToolCall>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ToolCall {
     #[serde(default)]
     pub id: String,
@@ -48,7 +50,7 @@ pub struct ToolCall {
     pub function: Function,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Function {
     pub name: String,
     pub arguments: String, // JSON-encoded string in BOTH your examples
@@ -90,17 +92,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ai_model = env::var("LOCAL_MODEL").unwrap_or("anthropic/claude-haiku-4.5".to_string());
 
-    #[allow(unused_variables)]
-    let response: Value = client
-        .chat()
-        .create_byot(json!({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": args.prompt,
+    let mut messages: Vec<Message> = vec![
+        Message { role: "user".to_string(), tool_call_id: None, content: args.prompt, reasoning: None, tool_calls: Vec::new()}
+    ];
 
-                }
-            ],
+    // You can use print statements as follows for debugging, they'll be visible when running tests.
+    eprintln!("Logs from your program will appear here!");
+
+    'outer: loop {
+        
+        #[allow(unused_variables)]
+        let response: Value = client
+            .chat()
+            .create_byot(json!({
+            "messages": messages,
             "tools": [
                 {
                     "type": "function",
@@ -124,30 +129,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .await?;
 
-    
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    eprintln!("Logs from your program will appear here!");
+        let body: ChatCompletion = serde_json::from_value(response)?;
 
-    let body: ChatCompletion = serde_json::from_value(response)?;
+        let choice = match body.choices.into_iter().next() {
+            Some(c) => c,
+            None => break 'outer,
+        };
+        
+        let message = choice.message;
 
-    if let Some(content) = body.choices.first().and_then(|c| c.message.tool_calls.first()) {
-        let name = &content.function.name;
-        let args: serde_json::Value = serde_json::from_str(&content.function.arguments)?;
-        let file_path = args.get("file_path").and_then(|v| v.as_str());
-
-        match name.as_str() {
-            "Read" => {
-                
-                if let Some(path) = file_path {
-                    let f = std::fs::read_to_string(path)?;
-                    println!("{}", f);
-                }
-            }
-            _ => { println!("Not implemented operation yet!"); }
+        if message.tool_calls.is_empty() {
+            let m = message;
+            println!("{}", m.content);
+            break 'outer;
         }
-    } else if let Some(resp) = body.choices.first().and_then(|c| c.message.content.as_ref()) {
-        println!("{}", resp);
+
+        let tool_calls = message.tool_calls.clone();
+        
+        messages.push(message);
+            
+
+        for tool_call in tool_calls {
+            let id = tool_call.id;
+            let name = tool_call.function.name;
+            let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)?;
+            let file_path = args.get("file_path").and_then(|v| v.as_str());
+
+            match name.as_str() {
+                "Read" => {
+                    
+                    if let Some(path) = file_path {
+                        let f = std::fs::read_to_string(path)?;
+                        messages.push(Message { role: "tool".to_string(), tool_call_id: Some(id), content: f, reasoning: None, tool_calls: Vec::new()})
+                    }
+                }
+                _ => { println!("Not implemented operation yet!"); }
+            }
+        }
+            
+    
     }
+    
 
 
     Ok(())
