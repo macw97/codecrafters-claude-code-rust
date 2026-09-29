@@ -4,6 +4,10 @@ use serde_json::{Value, json, from_value};
 use serde::{Deserialize, Serialize};
 use std::{env, process};
 use std::process::Command;
+use walkdir::WalkDir;
+use std::fs;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
 
 
 #[derive(Debug, Deserialize)]
@@ -66,11 +70,86 @@ pub struct Usage {
     #[serde(default)]
     pub total_tokens: u32,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct SkillMeta {
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug)]
+pub struct Skill {
+    pub meta: SkillMeta,
+    pub body: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Error)]
+pub enum SkillError {
+    #[error("failed to read {path}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("invalid frontmatter in {path}: {reason}")]
+    Frontmatter { path: PathBuf, reason: &'static str },
+    #[error("invalid YAML in {path}")]
+    Yaml {
+        path: PathBuf,
+        #[source]
+        source: serde_norway::Error,
+    },
+    #[error("failed to walk skills directory")]
+    Walk(#[from] walkdir::Error),
+}
+
+#[derive(Debug, Default)]
+pub struct LoadReport {
+    pub skills: Vec<Skill>,
+    pub errors: Vec<SkillError>,
+}
+
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
     #[arg(short = 'p', long)]
     prompt: String,
+}
+
+fn split_frontmatter(src: &str) -> Result<(&str, &str), &'static str> {
+    let src = src.strip_prefix('\u{feff}').unwrap_or(src);
+    let rest = src.strip_prefix("---").ok_or("missing opening `---`")?;
+    let end = rest.find("\n---").ok_or("missing closing `---`")?;
+    let yaml = &rest[..end];
+    let after_fence = &rest[end + "\n---".len()..];
+    let body = after_fence.split_once('\n').map_or("", |(_, body)| body);
+    Ok((yaml, body))
+}
+
+pub fn parse_skill(src: &str, path: &Path) -> Result<Skill, SkillError> {
+    let (yaml, body) = split_frontmatter(src).map_err(|reason| SkillError::Frontmatter {
+        path: path.to_path_buf(),
+        reason,
+    })?;
+    let meta: SkillMeta = serde_norway::from_str(yaml).map_err(|source| SkillError::Yaml {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(Skill {
+        meta,
+        body: body.trim().to_owned(),
+        path: path.to_path_buf(),
+    })
+}
+ 
+/// Reads and parses a single `SKILL.md` from disk.
+pub fn read_skill(path: &Path) -> Result<Skill, SkillError> {
+    let src = fs::read_to_string(path).map_err(|source| SkillError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    parse_skill(&src, path)
 }
 
 #[tokio::main]
@@ -99,6 +178,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     eprintln!("Logs from your program will appear here!");
+    let mut skills: Vec<Skill> = Vec::new();
+
+    for entry in WalkDir::new(".claude/skills").min_depth(2).max_depth(2) {
+    
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                continue;
+            }
+        };
+
+
+        let is_skill_file = entry.file_type().is_file() && entry.file_name().eq_ignore_ascii_case("SKILL.md");
+         
+        if !is_skill_file {
+            continue;
+        }
+
+        match read_skill(entry.path()) {
+            Ok(skill) => skills.push(skill),
+            Err(err) => println!("{}", err),
+        }
+    }
+
+    let mut system = String::from("You have access to the following skills:\n");
+    for skill in &skills {
+        system.push_str(&format!("\n- {}: {}", skill.meta.name, skill.meta.description));
+    } 
+
+    messages.push(Message { role: "system".to_string(), tool_call_id: None, content: Some(system), reasoning: None, tool_calls: Vec::new()});
 
     'outer: loop {
         
